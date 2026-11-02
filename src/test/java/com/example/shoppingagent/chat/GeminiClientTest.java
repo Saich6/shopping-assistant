@@ -57,12 +57,14 @@ class GeminiClientTest {
     @Test
     void mapsGeminiErrorStatusToBadGateway() {
         server.expect(requestTo(BASE + "/models/test-model:generateContent"))
-                .andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS));
+                .andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body("{\"error\":{\"message\":\"Quota exceeded\"}}"));
 
         assertThatThrownBy(() -> client.generate("hi"))
                 .isInstanceOfSatisfying(GeminiException.class, e -> {
                     assertThat(e.getStatus()).isEqualTo(HttpStatus.BAD_GATEWAY);
-                    assertThat(e.getMessage()).contains("429");
+                    assertThat(e.getMessage()).contains("429").contains("Quota exceeded");
                 });
     }
 
