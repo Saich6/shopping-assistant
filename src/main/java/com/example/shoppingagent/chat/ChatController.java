@@ -6,15 +6,18 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @RequestMapping("/api/chat")
 public class ChatController {
-    private final GeminiClient gemini;
+    private final AgentService agent;
 
-    public ChatController(GeminiClient gemini) {
-        this.gemini = gemini;
+    public ChatController(AgentService agent) {
+        this.agent = agent;
     }
 
-    /** Example body: {"message": "What is a good TV under $1000?"} */
-    @PostMapping
+    /**
+     * Example body: {"message": "Do you have any TVs on offer?"}
+     * "produces" declares UTF-8 so clients (e.g. Windows PowerShell) decode characters like ' correctly.
+     */
+    @PostMapping(produces = "application/json;charset=UTF-8")
     public ChatResponse chat(@Valid @RequestBody ChatRequest request) {
-        return new ChatResponse(gemini.generate(request.message()));
+        return new ChatResponse(agent.chat(request.message()));
     }
 }

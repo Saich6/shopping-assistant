@@ -6,7 +6,7 @@ mirroring the architecture of the production integration.
 ## Roadmap
 1. [x] Product catalog + search API (stand-in for Google Retail Search)
 2. [x] Chat endpoint calling the Gemini API
-3. [ ] Tool calling: search_products, get_offers, get_feature_info
+3. [~] Tool calling: search_products (done), get_offers, get_feature_info
 4. [ ] Token service (JWT, session-bound)
 5. [ ] Chat widget + streaming UI
 6. [ ] Gateway, analytics, memory, guardrails
@@ -25,3 +25,10 @@ Set your key once as an environment variable (never commit it), then:
 .\mvnw.cmd spring-boot:run
 Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/chat -ContentType "application/json" -Body '{"message":"Hello, what can you help me with?"}'
 ```
+
+## Tool calling (Step 3)
+Gemini can now call `search_products` to look at the real catalog instead of guessing:
+```
+Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/chat -ContentType "application/json" -Body '{"message":"Do you have tvs on offer?"}'
+```
+The app log shows each tool call (`model called tool search_products with {...}`).

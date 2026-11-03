@@ -1,0 +1,92 @@
+package com.example.shoppingagent.chat;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
+
+import com.example.shoppingagent.catalog.CatalogService;
+import com.example.shoppingagent.catalog.Product;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.math.BigDecimal;
+import java.util.List;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.client.ExpectedCount;
+import org.springframework.test.web.client.MockRestServiceServer;
+import org.springframework.web.client.RestClient;
+
+/** Tests the agent loop with a fake Gemini server and a fake catalog. */
+class AgentServiceTest {
+    static final String BASE = "https://example.test/v1beta";
+    static final String URL = BASE + "/models/m:generateContent";
+
+    static final String TOOL_CALL = """
+        {"candidates":[{"content":{"role":"model","parts":[
+          {"functionCall":{"name":"search_products","args":{"query":"tv","only_offers":true}}}]}}]}
+        """;
+    static final String FINAL_TEXT = """
+        {"candidates":[{"content":{"role":"model","parts":[{"text":"The Samsung TV is 15% off."}]}}]}
+        """;
+
+    MockRestServiceServer server;
+    CatalogService catalog = mock(CatalogService.class);
+    AgentService agent;
+
+    @BeforeEach
+    void setUp() {
+        RestClient.Builder builder = RestClient.builder().baseUrl(BASE);
+        server = MockRestServiceServer.bindTo(builder).build();
+        GeminiClient gemini = new GeminiClient(builder.build(), new GeminiProperties("k", "m", BASE));
+        agent = new AgentService(gemini, new ShoppingTools(catalog), new ObjectMapper());
+    }
+
+    @Test
+    void answersDirectlyWhenNoToolIsNeeded() {
+        server.expect(requestTo(URL)).andRespond(withSuccess(FINAL_TEXT, MediaType.APPLICATION_JSON));
+
+        assertThat(agent.chat("hi")).isEqualTo("The Samsung TV is 15% off.");
+        server.verify();
+    }
+
+    @Test
+    void runsToolThenSendsResultBackToGemini() {
+        when(catalog.search("tv", null, null, true)).thenReturn(List.of(
+                new Product("Samsung TV", "electronics", "Samsung", "desc", new BigDecimal("899.99"), 15, true)));
+
+        server.expect(requestTo(URL)).andRespond(withSuccess(TOOL_CALL, MediaType.APPLICATION_JSON));
+        // 2nd request must contain: [0] user question, [1] model's function call, [2] our tool result
+        server.expect(requestTo(URL))
+                .andExpect(jsonPath("$.contents.length()").value(3))
+                .andExpect(jsonPath("$.contents[0].parts[0].text").value("Any TVs on offer?"))
+                .andExpect(jsonPath("$.contents[1].parts[0].functionCall.name").value("search_products"))
+                .andExpect(jsonPath("$.contents[2].parts[0].functionResponse.name").value("search_products"))
+                .andExpect(jsonPath("$.contents[2].parts[0].functionResponse.response.products[0].name")
+                        .value("Samsung TV"))
+                .andExpect(jsonPath("$.contents[2].parts[0].functionResponse.response.products[0].sale_price")
+                        .value(764.99))
+                .andRespond(withSuccess(FINAL_TEXT, MediaType.APPLICATION_JSON));
+
+        assertThat(agent.chat("Any TVs on offer?")).isEqualTo("The Samsung TV is 15% off.");
+
+        verify(catalog).search("tv", null, null, true);
+        server.verify();
+    }
+
+    @Test
+    void stopsAfterMaxRoundsIfModelKeepsCallingTools() {
+        server.expect(ExpectedCount.times(AgentService.MAX_ROUNDS), requestTo(URL))
+                .andRespond(withSuccess(TOOL_CALL, MediaType.APPLICATION_JSON));
+
+        assertThatThrownBy(() -> agent.chat("loop forever"))
+                .isInstanceOfSatisfying(GeminiException.class,
+                        e -> assertThat(e.getStatus()).isEqualTo(HttpStatus.BAD_GATEWAY));
+        server.verify();
+    }
+}
