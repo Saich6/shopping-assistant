@@ -1,6 +1,7 @@
 package com.example.shoppingagent.chat;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
@@ -19,7 +20,12 @@ public class GeminiClient {
     static final String SYSTEM_PROMPT = """
         You are the Shopping Assistant for an online warehouse retailer.
         Help customers find products, understand offers and learn about site features.
-        Be concise and friendly. If you do not know something, say so instead of guessing.
+        Rules:
+        - For ANY question about products, prices, stock or offers, call the search_products tool
+          and answer ONLY from its results. Never invent products, prices or discounts.
+        - If the tool returns no products, say you could not find a match and suggest a broader search.
+        - When a product is on offer, show the regular price, the discount percent and the sale price.
+        - Be concise and friendly. If you do not know something, say so instead of guessing.
         """;
 
     private static final Logger log = LoggerFactory.getLogger(GeminiClient.class);
@@ -32,16 +38,22 @@ public class GeminiClient {
         this.props = props;
     }
 
-    public String generate(String userMessage) {
+    /**
+     * Makes ONE call to Gemini with the conversation so far and returns the model's reply
+     * (the candidate "content": a role plus parts that are text and/or function calls).
+     */
+    public JsonNode generateContent(List<JsonNode> contents, List<Map<String, Object>> tools) {
         if (props.apiKey() == null || props.apiKey().isBlank()) {
             throw new GeminiException(HttpStatus.SERVICE_UNAVAILABLE,
                     "GEMINI_API_KEY is not set. Set the environment variable and restart the app.");
         }
 
-        Map<String, Object> body = Map.of(
-                "systemInstruction", Map.of("parts", List.of(Map.of("text", SYSTEM_PROMPT))),
-                "contents", List.of(Map.of("role", "user",
-                        "parts", List.of(Map.of("text", userMessage)))));
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("systemInstruction", Map.of("parts", List.of(Map.of("text", SYSTEM_PROMPT))));
+        body.put("contents", contents);
+        if (tools != null && !tools.isEmpty()) {
+            body.put("tools", tools);
+        }
 
         JsonNode response;
         try {
@@ -65,12 +77,11 @@ public class GeminiClient {
                     "Could not reach Gemini: " + e.getMessage(), e);
         }
 
-        String text = response == null ? null : response.path("candidates").path(0)
-                .path("content").path("parts").path(0).path("text").asText(null);
-        if (text == null || text.isBlank()) {
+        JsonNode content = response == null ? null : response.path("candidates").path(0).path("content");
+        if (content == null || content.isMissingNode() || content.isNull()) {
             throw new GeminiException(HttpStatus.BAD_GATEWAY, "Gemini returned an empty answer");
         }
-        return text;
+        return content;
     }
 
     /** Pulls error.message out of Gemini's JSON error body, e.g. "API key not valid". */

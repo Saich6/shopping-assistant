@@ -1,7 +1,9 @@
 package com.example.shoppingagent.chat;
 
+import static org.hamcrest.Matchers.containsString;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -16,14 +18,15 @@ import org.springframework.test.web.servlet.MockMvc;
 @WebMvcTest(ChatController.class)
 class ChatControllerTest {
     @Autowired MockMvc mvc;
-    @MockBean GeminiClient gemini;
+    @MockBean AgentService agent;
 
     @Test
     void returnsReply() throws Exception {
-        when(gemini.generate("hello")).thenReturn("Hi!");
+        when(agent.chat("hello")).thenReturn("Hi!");
         mvc.perform(post("/api/chat").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"message\":\"hello\"}"))
                 .andExpect(status().isOk())
+                .andExpect(header().string("Content-Type", containsString("charset=UTF-8")))
                 .andExpect(jsonPath("$.reply").value("Hi!"));
     }
 
@@ -36,7 +39,7 @@ class ChatControllerTest {
 
     @Test
     void geminiFailureBecomesJsonError() throws Exception {
-        when(gemini.generate("hello")).thenThrow(new GeminiException(HttpStatus.BAD_GATEWAY, "boom"));
+        when(agent.chat("hello")).thenThrow(new GeminiException(HttpStatus.BAD_GATEWAY, "boom"));
         mvc.perform(post("/api/chat").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"message\":\"hello\"}"))
                 .andExpect(status().isBadGateway())
