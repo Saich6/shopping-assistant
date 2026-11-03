@@ -32,3 +32,14 @@ Gemini can now call `search_products` to look at the real catalog instead of gue
 Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/chat -ContentType "application/json" -Body '{"message":"Do you have tvs on offer?"}'
 ```
 The app log shows each tool call (`model called tool search_products with {...}`).
+
+## Web product search (SerpApi)
+The agent has two product sources and picks between them:
+- `search_products`: our own local catalog (fast, free)
+- `search_web_products`: Google Shopping via [SerpApi](https://serpapi.com) (wide range, third-party stores, uses credits)
+
+Set the key once as an environment variable (never commit it):
+```
+[Environment]::SetEnvironmentVariable("SERPAPI_API_KEY", "your_key", "User")
+```
+Then restart the terminal and the app. Try: `Show me olive oil options from other stores`.

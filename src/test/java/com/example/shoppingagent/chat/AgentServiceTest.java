@@ -11,6 +11,7 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 
 import com.example.shoppingagent.catalog.CatalogService;
 import com.example.shoppingagent.catalog.Product;
+import com.example.shoppingagent.websearch.SerpApiClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.util.List;
@@ -37,6 +38,7 @@ class AgentServiceTest {
 
     MockRestServiceServer server;
     CatalogService catalog = mock(CatalogService.class);
+    SerpApiClient serpApi = mock(SerpApiClient.class);
     AgentService agent;
 
     @BeforeEach
@@ -44,7 +46,7 @@ class AgentServiceTest {
         RestClient.Builder builder = RestClient.builder().baseUrl(BASE);
         server = MockRestServiceServer.bindTo(builder).build();
         GeminiClient gemini = new GeminiClient(builder.build(), new GeminiProperties("k", "m", BASE));
-        agent = new AgentService(gemini, new ShoppingTools(catalog), new ObjectMapper());
+        agent = new AgentService(gemini, new ShoppingTools(catalog, serpApi), new ObjectMapper());
     }
 
     @Test
@@ -87,6 +89,29 @@ class AgentServiceTest {
         assertThatThrownBy(() -> agent.chat("loop forever"))
                 .isInstanceOfSatisfying(GeminiException.class,
                         e -> assertThat(e.getStatus()).isEqualTo(HttpStatus.BAD_GATEWAY));
+        server.verify();
+    }
+
+    @Test
+    void limitsWebSearchesPerQuestion() {
+        // The model asks for 4 web searches in one turn; only MAX_WEB_SEARCHES (3) may actually run.
+        String fourWebCalls = """
+            {"candidates":[{"content":{"role":"model","parts":[
+              {"functionCall":{"name":"search_web_products","args":{"query":"a"}}},
+              {"functionCall":{"name":"search_web_products","args":{"query":"b"}}},
+              {"functionCall":{"name":"search_web_products","args":{"query":"c"}}},
+              {"functionCall":{"name":"search_web_products","args":{"query":"d"}}}]}}]}
+            """;
+        server.expect(requestTo(URL)).andRespond(withSuccess(fourWebCalls, MediaType.APPLICATION_JSON));
+        server.expect(requestTo(URL))
+                .andExpect(jsonPath("$.contents[2].parts[3].functionResponse.response.error")
+                        .value(org.hamcrest.Matchers.containsString("limit reached")))
+                .andRespond(withSuccess(FINAL_TEXT, MediaType.APPLICATION_JSON));
+
+        agent.chat("compare everything");
+
+        verify(serpApi, org.mockito.Mockito.times(AgentService.MAX_WEB_SEARCHES))
+                .searchShopping(org.mockito.ArgumentMatchers.anyString());
         server.verify();
     }
 }

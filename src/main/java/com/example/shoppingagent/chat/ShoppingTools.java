@@ -2,6 +2,8 @@ package com.example.shoppingagent.chat;
 
 import com.example.shoppingagent.catalog.CatalogService;
 import com.example.shoppingagent.catalog.Product;
+import com.example.shoppingagent.websearch.SerpApiClient;
+import com.example.shoppingagent.websearch.WebProduct;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -18,11 +20,14 @@ import org.springframework.stereotype.Component;
 @Component
 public class ShoppingTools {
     public static final String SEARCH_PRODUCTS = "search_products";
+    public static final String SEARCH_WEB_PRODUCTS = "search_web_products";
 
     private final CatalogService catalog;
+    private final SerpApiClient serpApi;
 
-    public ShoppingTools(CatalogService catalog) {
+    public ShoppingTools(CatalogService catalog, SerpApiClient serpApi) {
         this.catalog = catalog;
+        this.serpApi = serpApi;
     }
 
     /** The "tools" section of the Gemini request: a menu of functions the model may call. */
@@ -43,16 +48,29 @@ public class ShoppingTools {
                                         "Maximum price in dollars."),
                                 "only_offers", Map.of("type", "boolean", "description",
                                         "true to return only products that are on offer (discounted)."))));
-        return List.of(Map.of("functionDeclarations", List.of(searchProducts)));
+
+        Map<String, Object> searchWebProducts = Map.of(
+                "name", SEARCH_WEB_PRODUCTS,
+                "description", "Search the wider web (Google Shopping) for products sold by many third-party "
+                        + "stores. Use it ONLY when search_products found nothing suitable, or when the customer "
+                        + "asks for a wider selection, other brands, or comparisons. Slower than search_products. "
+                        + "Results are third-party listings, NOT this store's inventory or prices.",
+                "parameters", Map.of(
+                        "type", "object",
+                        "properties", Map.of(
+                                "query", Map.of("type", "string", "description",
+                                        "A natural product search phrase, e.g. 'organic olive oil 2L'."))));
+        return List.of(Map.of("functionDeclarations", List.of(searchProducts, searchWebProducts)));
     }
 
     /** Runs a tool and returns a JSON-friendly result. Failures become {"error": ...} so the model can recover. */
     public Map<String, Object> execute(String name, JsonNode args) {
-        if (!SEARCH_PRODUCTS.equals(name)) {
-            return Map.of("error", "Unknown tool: " + name);
-        }
         try {
-            return searchProducts(args);
+            return switch (name) {
+                case SEARCH_PRODUCTS -> searchProducts(args);
+                case SEARCH_WEB_PRODUCTS -> searchWebProducts(args);
+                default -> Map.of("error", "Unknown tool: " + name);
+            };
         } catch (RuntimeException e) {
             return Map.of("error", "Tool failed: " + e.getMessage());
         }
@@ -67,6 +85,27 @@ public class ShoppingTools {
         List<Map<String, Object>> products = catalog.search(query, category, maxPrice, onlyOffers)
                 .stream().map(ShoppingTools::toMap).toList();
         return Map.of("count", products.size(), "products", products);
+    }
+
+    private Map<String, Object> searchWebProducts(JsonNode args) {
+        List<Map<String, Object>> products = serpApi.searchShopping(args.path("query").asText(""))
+                .stream().map(ShoppingTools::toMap).toList();
+        return Map.of(
+                "source", "third-party web results (Google Shopping), not this store's inventory",
+                "count", products.size(),
+                "products", products);
+    }
+
+    private static Map<String, Object> toMap(WebProduct p) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("name", p.title());
+        m.put("price", p.price());
+        m.put("store", p.store());
+        m.put("rating", p.rating());
+        m.put("reviews", p.reviews());
+        m.put("link", p.link());
+        m.put("notes", p.notes());
+        return m;
     }
 
     private static BigDecimal toBigDecimal(JsonNode node) {
