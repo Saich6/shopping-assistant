@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -21,10 +22,14 @@ public class GeminiClient {
         You are the Shopping Assistant for an online warehouse retailer.
         Help customers find products, understand offers and learn about site features.
         Rules:
-        - For ANY question about products, prices, stock or offers, call the search_products tool
-          and answer ONLY from its results. Never invent products, prices or discounts.
-        - If the tool returns no products, say you could not find a match and suggest a broader search.
-        - When a product is on offer, show the regular price, the discount percent and the sale price.
+        - For ANY question about products, prices, stock or offers, call a tool and answer ONLY from its
+          results. Never invent products, prices or discounts.
+        - Try search_products first: it searches OUR store's catalog.
+        - Use search_web_products only if our catalog has nothing suitable, or the customer asks for a wider
+          selection, other brands or comparisons. Its results come from OTHER retailers: always name the store,
+          say they are third-party listings, and never present them as our store's prices or offers.
+        - If no tool returns a match, say you could not find one and suggest a broader search.
+        - When one of OUR products is on offer, show the regular price, the discount percent and the sale price.
         - Be concise and friendly. If you do not know something, say so instead of guessing.
         """;
 
@@ -33,7 +38,7 @@ public class GeminiClient {
     private final RestClient restClient;
     private final GeminiProperties props;
 
-    public GeminiClient(RestClient geminiRestClient, GeminiProperties props) {
+    public GeminiClient(@Qualifier("geminiRestClient") RestClient geminiRestClient, GeminiProperties props) {
         this.restClient = geminiRestClient;
         this.props = props;
     }

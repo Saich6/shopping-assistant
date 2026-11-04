@@ -25,6 +25,9 @@ public class AgentService {
     /** Safety cap so a confused model cannot loop (and spend money) forever. */
     static final int MAX_ROUNDS = 5;
 
+    /** Every web search costs a SerpApi credit, so limit them per customer question. */
+    static final int MAX_WEB_SEARCHES = 3;
+
     private final GeminiClient gemini;
     private final ShoppingTools tools;
     private final ObjectMapper mapper;
@@ -39,6 +42,7 @@ public class AgentService {
         // "contents" is the whole conversation. Gemini is stateless: we resend it on every call.
         List<JsonNode> contents = new ArrayList<>();
         contents.add(userContent(userMessage));
+        int webSearches = 0;
 
         for (int round = 1; round <= MAX_ROUNDS; round++) {
             JsonNode modelContent = gemini.generateContent(contents, tools.toolsPayload());
@@ -56,7 +60,13 @@ public class AgentService {
                 String name = call.path("name").asText();
                 JsonNode args = call.path("args");
                 log.info("Round {}: model called tool {} with {}", round, name, args);
-                Map<String, Object> result = tools.execute(name, args);
+                Map<String, Object> result;
+                if (ShoppingTools.SEARCH_WEB_PRODUCTS.equals(name) && ++webSearches > MAX_WEB_SEARCHES) {
+                    result = Map.of("error", "Web search limit reached for this question. "
+                            + "Answer with the results you already have.");
+                } else {
+                    result = tools.execute(name, args);
+                }
 
                 ObjectNode functionResponse = resultParts.addObject().putObject("functionResponse");
                 functionResponse.put("name", name);
