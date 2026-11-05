@@ -14,15 +14,20 @@ store's own prices or offers.
 
 ## How a question is answered
 ```
-POST /api/chat {"message": "..."}
+POST /api/chat {"message": "...", "sessionId": "..." (optional)}
+  -> ConversationStore: load earlier turns of this session (memory)
   -> AgentService (agent loop, max 5 rounds)
        -> GeminiClient -> Gemini API: "answer, or ask for a tool"
        -> if a tool is requested: ShoppingTools runs it
             -> search_products      -> CatalogService (local database)
             -> search_web_products  -> SerpApiClient  (Google Shopping)
        -> tool result goes back to Gemini -> final text answer
-  -> {"reply": "..."}
+  -> ConversationStore: save this question + answer
+  -> {"reply": "...", "sessionId": "..."}
 ```
+**Memory:** the reply includes a `sessionId`; send it back with the next message to ask follow-ups
+("which one is cheapest?"). Only questions and final answers are remembered (not tool results). History is kept
+in the server's memory behind a `ConversationStore` interface, so a database version can replace it later.
 Safety limits: at most 5 agent rounds and 3 web searches per question; identical web searches are cached for
 10 minutes to save credits.
 
@@ -64,6 +69,7 @@ Set them either way:
 
 ### 2. Settings (`src/main/resources/application.properties`)
 `gemini.model`, `gemini.fallback-model` (blank = no fallback), `gemini.max-attempts`, `gemini.retry-delay-millis`,
+`conversation.max-turns` (10), `conversation.ttl-minutes` (30), `conversation.max-sessions` (1000),
 `gemini.base-url`, `serpapi.base-url`, `serpapi.max-results`. Keys are read from the
 environment variables above, never from this file.
 
@@ -85,19 +91,28 @@ Invoke-RestMethod "http://localhost:8080/api/products/search?q=tv&onlyOffers=tru
 # Triggers the web search (the catalog has no espresso machines)
 (Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/chat -ContentType "application/json" -Body '{"message":"Do you sell espresso machines?"}').reply
 ```
+
+Follow-up question in the same conversation:
+```powershell
+$r = Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/chat -ContentType "application/json" -Body '{"message":"Show me TVs"}'
+$r.reply
+$body = @{ message = "Which one is cheapest?"; sessionId = $r.sessionId } | ConvertTo-Json
+(Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/chat -ContentType "application/json" -Body $body).reply
+```
 The app log shows each tool call, e.g. `model called tool search_web_products with {...}`.
 
 ## Endpoints
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/products/search` | Catalog search. Optional params: `q`, `category`, `maxPrice`, `onlyOffers` |
-| POST | `/api/chat` | Body `{"message": "..."}` (1 to 2000 characters). Returns `{"reply": "..."}` |
+| POST | `/api/chat` | Body `{"message": "...", "sessionId": "<uuid>"}`. `message` is 1 to 2000 characters; `sessionId` is optional. Returns `{"reply": "...", "sessionId": "..."}` |
 
 ## Project layout
 ```
 src/main/java/com/example/shoppingagent/
   catalog/     Product, repository, CatalogService, seed data, REST endpoint
   chat/        ChatController, AgentService (agent loop), GeminiClient, ShoppingTools
+  conversation/ ConversationStore (interface), InMemoryConversationStore, Turn
   websearch/   SerpApiClient (Google Shopping), WebProduct
 ```
 
@@ -113,6 +128,8 @@ All tests use mock servers: no API keys, network or credits are needed.
 | `503` "The assistant is busy" from `/api/chat` | Both the main and fallback Gemini models stayed overloaded after retries. The log shows each attempt. Wait a minute, or change `gemini.model` / `gemini.fallback-model`. |
 | `502` from `/api/chat` with "Gemini returned HTTP 4xx" | A non-retryable error such as a bad key (401/403), wrong model name (404) or bad request (400). The message includes Gemini's reason. |
 | `503` with "GEMINI_API_KEY is not set" | The app cannot see the variable. Set it, open a new terminal, restart the app. |
+| `400` with "sessionId must be a UUID" | Send back exactly the `sessionId` from the previous reply, or omit it to start a new conversation. |
+| Assistant "forgot" the conversation | The server restarted, the session was idle for 30 minutes, or it is older than the last 10 turns. Memory is in server memory only. |
 | Chat never uses web search | Ask for something the catalog lacks, or "options from other stores". Check `SERPAPI_API_KEY` is set. |
 | `400` when calling the chat with `curl.exe` | PowerShell strips the quotes in the JSON body. Use `Invoke-RestMethod` as shown above. |
 | `JAVA_HOME` errors | Point `JAVA_HOME` at your JDK folder (no trailing `\` or `\bin`). |
@@ -121,7 +138,8 @@ All tests use mock servers: no API keys, network or credits are needed.
 - Catalog search is a plain substring match (`tv` matches, `tvs` may not); the model is told to use short
   singular keywords. Better retrieval is planned.
 - Web results are third-party listings and depend on SerpApi's default location.
-- No conversation memory yet: each request starts fresh.
+- Conversation memory lives in the server's memory: lost on restart, and works for one server instance only.
+- A session id is a secret: anyone who knows it can continue that conversation. The planned token service will bind sessions to users.
 - The fallback restarts the question on the second model; it does not continue a half-finished conversation.
 - Network errors and timeouts are not retried (only HTTP 429/5xx are).
 
@@ -131,7 +149,8 @@ All tests use mock servers: no API keys, network or credits are needed.
 3. [x] Tool calling: Gemini searches the catalog instead of guessing
 4. [x] Web product search via SerpApi, alongside the local catalog
 5. [x] Retry and fallback model for Gemini 429/5xx errors
-6. [ ] Conversation memory (session id, message history)
+6. [x] Conversation memory (session id, message history, in memory)
+6b. [ ] Database-backed conversation store (PostgreSQL or Redis)
 7. [ ] Chat widget with streaming replies
 8. [ ] Token service (session-bound JWT)
 9. [ ] `get_feature_info` tool (questions about site features)
