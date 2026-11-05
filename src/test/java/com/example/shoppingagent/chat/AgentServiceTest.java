@@ -7,6 +7,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.jsonPath;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 import com.example.shoppingagent.catalog.CatalogService;
@@ -26,7 +27,8 @@ import org.springframework.web.client.RestClient;
 /** Tests the agent loop with a fake Gemini server and a fake catalog. */
 class AgentServiceTest {
     static final String BASE = "https://example.test/v1beta";
-    static final String URL = BASE + "/models/m:generateContent";
+    static final String URL = BASE + "/models/m:generateContent";       // main model
+    static final String FALLBACK_URL = BASE + "/models/fb:generateContent"; // fallback model
 
     static final String TOOL_CALL = """
         {"candidates":[{"content":{"role":"model","parts":[
@@ -45,8 +47,9 @@ class AgentServiceTest {
     void setUp() {
         RestClient.Builder builder = RestClient.builder().baseUrl(BASE);
         server = MockRestServiceServer.bindTo(builder).build();
-        GeminiClient gemini = new GeminiClient(builder.build(), new GeminiProperties("k", "m", BASE));
-        agent = new AgentService(gemini, new ShoppingTools(catalog, serpApi), new ObjectMapper());
+        GeminiProperties props = new GeminiProperties("k", "m", "fb", BASE, 3, 0);
+        GeminiClient gemini = new GeminiClient(builder.build(), props);
+        agent = new AgentService(gemini, new ShoppingTools(catalog, serpApi), new ObjectMapper(), props);
     }
 
     @Test
@@ -113,5 +116,67 @@ class AgentServiceTest {
         verify(serpApi, org.mockito.Mockito.times(AgentService.MAX_WEB_SEARCHES))
                 .searchShopping(org.mockito.ArgumentMatchers.anyString());
         server.verify();
+    }
+
+    @Test
+    void usesFallbackModelWhenMainModelStaysOverloaded() {
+        // Main model: 3 attempts, all 503. Fallback model then answers.
+        server.expect(ExpectedCount.times(3), requestTo(URL)).andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+        server.expect(requestTo(FALLBACK_URL)).andRespond(withSuccess(FINAL_TEXT, MediaType.APPLICATION_JSON));
+
+        assertThat(agent.chat("hi")).isEqualTo("The Samsung TV is 15% off.");
+        server.verify();
+    }
+
+    @Test
+    void fallbackRestartsTheQuestionInsteadOfMixingModels() {
+        when(catalog.search("tv", null, null, true)).thenReturn(List.of());
+        // Main model asks for a tool (success), then goes down on round 2.
+        server.expect(requestTo(URL)).andRespond(withSuccess(TOOL_CALL, MediaType.APPLICATION_JSON));
+        server.expect(ExpectedCount.times(3), requestTo(URL)).andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+        // The fallback must start clean: ONLY the user's question, none of the main model's turns.
+        server.expect(requestTo(FALLBACK_URL))
+                .andExpect(jsonPath("$.contents.length()").value(1))
+                .andExpect(jsonPath("$.contents[0].parts[0].text").value("Any TVs on offer?"))
+                .andRespond(withSuccess(FINAL_TEXT, MediaType.APPLICATION_JSON));
+
+        assertThat(agent.chat("Any TVs on offer?")).isEqualTo("The Samsung TV is 15% off.");
+        server.verify();
+    }
+
+    @Test
+    void friendlyMessageWhenBothModelsAreOverloaded() {
+        server.expect(ExpectedCount.times(3), requestTo(URL)).andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+        server.expect(ExpectedCount.times(3), requestTo(FALLBACK_URL)).andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS));
+
+        assertThatThrownBy(() -> agent.chat("hi"))
+                .isInstanceOfSatisfying(GeminiException.class, e -> {
+                    assertThat(e.getStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+                    assertThat(e.getMessage()).contains("busy").doesNotContain("HTTP");
+                });
+        server.verify();
+    }
+
+    @Test
+    void noFallbackConfiguredMeansFriendlyMessageAfterMainModelFails() {
+        GeminiProperties noFallback = new GeminiProperties("k", "m", "", BASE, 3, 0);
+        RestClient.Builder b = RestClient.builder().baseUrl(BASE);
+        MockRestServiceServer s = MockRestServiceServer.bindTo(b).build();
+        AgentService noFallbackAgent = new AgentService(new GeminiClient(b.build(), noFallback),
+                new ShoppingTools(catalog, serpApi), new ObjectMapper(), noFallback);
+        s.expect(ExpectedCount.times(3), requestTo(URL)).andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+
+        assertThatThrownBy(() -> noFallbackAgent.chat("hi"))
+                .isInstanceOf(GeminiException.class).hasMessageContaining("busy");
+        s.verify();
+    }
+
+    @Test
+    void badRequestDoesNotTriggerFallback() {
+        // A 400 is OUR mistake; the fallback model would fail the same way, so no second model is tried.
+        server.expect(ExpectedCount.once(), requestTo(URL)).andRespond(withStatus(HttpStatus.BAD_REQUEST));
+
+        assertThatThrownBy(() -> agent.chat("hi")).isInstanceOf(GeminiException.class);
+        server.verify(); // no call to FALLBACK_URL was expected, so one would have failed the test
     }
 }
