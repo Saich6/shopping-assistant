@@ -46,6 +46,31 @@ a moment." Errors that retrying cannot fix (bad key, bad request) fail immediate
 | Google Retail Search / catalog | Local catalog + SerpApi web search |
 | Analytics events | Analytics events (planned) |
 
+## Chat widget
+Run the app and open **http://localhost:8080/**: a demo "store" page with a chat button at the bottom right.
+
+![Chat widget on the demo page](docs/images/widget-desktop.png)
+
+The widget is one self-contained script (`src/main/resources/static/widget/shopping-assistant.js`, no
+dependencies), the local stand-in for the script Adobe Target injects into the real site. Adding it to any page is
+one line:
+```html
+<script src="/widget/shopping-assistant.js" data-api-url="/api/chat" data-title="Shopping Assistant"></script>
+```
+Options: `data-api-url`, `data-title`; or set `window.ShoppingAssistantConfig = { apiUrl, title }` before the
+script loads (use this when the script is injected dynamically, where `document.currentScript` is unavailable).
+
+What it does: floating button and chat panel, suggestion chips, typing indicator, "New chat", keeps the
+`sessionId` in `sessionStorage` (survives a reload, per tab), friendly error messages, dark mode, full-screen on
+phones, keyboard support (Enter sends, Shift+Enter new line, Escape closes), screen-reader labels.
+
+Design points:
+- **Shadow DOM:** the widget's styles cannot leak into the host page, and the page's styles cannot break the widget.
+- **Safe rendering:** the model's Markdown (bold, bullets, links) is built with DOM nodes, never `innerHTML`, and
+  only `http(s)` links are made clickable, so model or web-page text cannot run as script.
+- **Analytics hook:** it dispatches a `shopping-assistant` event on `window` with `detail.type` =
+  `assistant_opened`, `query_sent`, `response_received`, `link_click` or `new_chat`.
+
 ## Setup
 Requires **Java 21**. Maven is not needed: the Maven Wrapper (`mvnw`) is included.
 
@@ -113,6 +138,9 @@ src/main/java/com/example/shoppingagent/
   catalog/     Product, repository, CatalogService, seed data, REST endpoint
   chat/        ChatController, AgentService (agent loop), GeminiClient, ShoppingTools
   conversation/ ConversationStore (interface), InMemoryConversationStore, Turn
+src/main/resources/static/
+  index.html                 demo store page
+  widget/shopping-assistant.js   the chat widget
   websearch/   SerpApiClient (Google Shopping), WebProduct
 ```
 
@@ -130,6 +158,7 @@ All tests use mock servers: no API keys, network or credits are needed.
 | `503` with "GEMINI_API_KEY is not set" | The app cannot see the variable. Set it, open a new terminal, restart the app. |
 | `400` with "sessionId must be a UUID" | Send back exactly the `sessionId` from the previous reply, or omit it to start a new conversation. |
 | Assistant "forgot" the conversation | The server restarted, the session was idle for 30 minutes, or it is older than the last 10 turns. Memory is in server memory only. |
+| Chat button does not appear | Check the browser console and that `/widget/shopping-assistant.js` loads (200). After changing the script, hard-refresh (Ctrl+F5). |
 | Chat never uses web search | Ask for something the catalog lacks, or "options from other stores". Check `SERPAPI_API_KEY` is set. |
 | `400` when calling the chat with `curl.exe` | PowerShell strips the quotes in the JSON body. Use `Invoke-RestMethod` as shown above. |
 | `JAVA_HOME` errors | Point `JAVA_HOME` at your JDK folder (no trailing `\` or `\bin`). |
@@ -139,6 +168,9 @@ All tests use mock servers: no API keys, network or credits are needed.
   singular keywords. Better retrieval is planned.
 - Web results are third-party listings and depend on SerpApi's default location.
 - Conversation memory lives in the server's memory: lost on restart, and works for one server instance only.
+- The widget is not minified, and only works when served from the same origin as the API: using it on another
+  site needs CORS support on the server (planned with the gateway step).
+- Replies appear all at once (typing indicator), not streamed token by token.
 - A session id is a secret: anyone who knows it can continue that conversation. The planned token service will bind sessions to users.
 - The fallback restarts the question on the second model; it does not continue a half-finished conversation.
 - Network errors and timeouts are not retried (only HTTP 429/5xx are).
@@ -151,7 +183,8 @@ All tests use mock servers: no API keys, network or credits are needed.
 5. [x] Retry and fallback model for Gemini 429/5xx errors
 6. [x] Conversation memory (session id, message history, in memory)
 6b. [ ] Database-backed conversation store (PostgreSQL or Redis)
-7. [ ] Chat widget with streaming replies
+7. [x] Chat widget (typing indicator, safe Markdown, dark mode, mobile)
+7b. [ ] Streaming replies (server-sent events)
 8. [ ] Token service (session-bound JWT)
 9. [ ] `get_feature_info` tool (questions about site features)
 10. [ ] Gateway, analytics events, guardrails
