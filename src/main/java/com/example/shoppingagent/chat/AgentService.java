@@ -31,21 +31,50 @@ public class AgentService {
     private final GeminiClient gemini;
     private final ShoppingTools tools;
     private final ObjectMapper mapper;
+    private final GeminiProperties props;
 
-    public AgentService(GeminiClient gemini, ShoppingTools tools, ObjectMapper mapper) {
+    public AgentService(GeminiClient gemini, ShoppingTools tools, ObjectMapper mapper, GeminiProperties props) {
         this.gemini = gemini;
         this.tools = tools;
         this.mapper = mapper;
+        this.props = props;
     }
 
+    /**
+     * Answers a question with the main model. If that model stays overloaded even after retries,
+     * the WHOLE question is started again on the fallback model (never mixing models in one conversation,
+     * because the history can hold model-specific details). If that fails too, the customer gets a friendly message.
+     */
     public String chat(String userMessage) {
+        try {
+            return run(userMessage, props.model());
+        } catch (ModelOverloadedException e) {
+            String fallback = props.fallbackModel();
+            if (fallback == null || fallback.isBlank() || fallback.equals(props.model())) {
+                throw busy(e);
+            }
+            log.warn("Main model {} is overloaded; retrying the question on fallback model {}", props.model(), fallback);
+            try {
+                return run(userMessage, fallback);
+            } catch (ModelOverloadedException e2) {
+                throw busy(e2);
+            }
+        }
+    }
+
+    private static GeminiException busy(ModelOverloadedException cause) {
+        return new GeminiException(HttpStatus.SERVICE_UNAVAILABLE,
+                "The assistant is busy right now. Please try again in a moment.", cause);
+    }
+
+    private String run(String userMessage, String model) {
         // "contents" is the whole conversation. Gemini is stateless: we resend it on every call.
         List<JsonNode> contents = new ArrayList<>();
         contents.add(userContent(userMessage));
         int webSearches = 0;
 
         for (int round = 1; round <= MAX_ROUNDS; round++) {
-            JsonNode modelContent = gemini.generateContent(contents, tools.toolsPayload());
+            JsonNode modelContent = gemini.generateContent(contents, tools.toolsPayload(), model);
             contents.add(modelContent); // keep the model's turn exactly as received
 
             List<JsonNode> calls = functionCalls(modelContent);

@@ -26,6 +26,11 @@ POST /api/chat {"message": "..."}
 Safety limits: at most 5 agent rounds and 3 web searches per question; identical web searches are cached for
 10 minutes to save credits.
 
+**Resilience:** if Gemini answers with a temporary error (HTTP 429, 500, 502, 503, 504), the call is retried up
+to 3 times (waiting 1s, then 2s). If the main model is still failing, the whole question is restarted on the
+**fallback model**. If that fails too, the customer gets "The assistant is busy right now. Please try again in
+a moment." Errors that retrying cannot fix (bad key, bad request) fail immediately with Gemini's message.
+
 ## Mapping to the production architecture
 | Production (Costco + Google) | This project |
 |---|---|
@@ -58,7 +63,8 @@ Set them either way:
   catalog search still works.
 
 ### 2. Settings (`src/main/resources/application.properties`)
-`gemini.model`, `gemini.base-url`, `serpapi.base-url`, `serpapi.max-results`. Keys are read from the
+`gemini.model`, `gemini.fallback-model` (blank = no fallback), `gemini.max-attempts`, `gemini.retry-delay-millis`,
+`gemini.base-url`, `serpapi.base-url`, `serpapi.max-results`. Keys are read from the
 environment variables above, never from this file.
 
 ### 3. Run
@@ -104,7 +110,8 @@ All tests use mock servers: no API keys, network or credits are needed.
 ## Troubleshooting
 | Symptom | Cause / fix |
 |---|---|
-| `502` from `/api/chat`, log says `Gemini ... HTTP 503 ... high demand` | Gemini is overloaded. Wait a minute and retry, or change `gemini.model`. |
+| `503` "The assistant is busy" from `/api/chat` | Both the main and fallback Gemini models stayed overloaded after retries. The log shows each attempt. Wait a minute, or change `gemini.model` / `gemini.fallback-model`. |
+| `502` from `/api/chat` with "Gemini returned HTTP 4xx" | A non-retryable error such as a bad key (401/403), wrong model name (404) or bad request (400). The message includes Gemini's reason. |
 | `503` with "GEMINI_API_KEY is not set" | The app cannot see the variable. Set it, open a new terminal, restart the app. |
 | Chat never uses web search | Ask for something the catalog lacks, or "options from other stores". Check `SERPAPI_API_KEY` is set. |
 | `400` when calling the chat with `curl.exe` | PowerShell strips the quotes in the JSON body. Use `Invoke-RestMethod` as shown above. |
@@ -115,14 +122,15 @@ All tests use mock servers: no API keys, network or credits are needed.
   singular keywords. Better retrieval is planned.
 - Web results are third-party listings and depend on SerpApi's default location.
 - No conversation memory yet: each request starts fresh.
-- No retry when Gemini is briefly overloaded (see Troubleshooting).
+- The fallback restarts the question on the second model; it does not continue a half-finished conversation.
+- Network errors and timeouts are not retried (only HTTP 429/5xx are).
 
 ## Roadmap
 1. [x] Product catalog and search API (local stand-in for Google Retail Search)
 2. [x] Chat endpoint calling the Gemini API
 3. [x] Tool calling: Gemini searches the catalog instead of guessing
 4. [x] Web product search via SerpApi, alongside the local catalog
-5. [ ] Retry and fallback model for Gemini 429/503 errors
+5. [x] Retry and fallback model for Gemini 429/5xx errors
 6. [ ] Conversation memory (session id, message history)
 7. [ ] Chat widget with streaming replies
 8. [ ] Token service (session-bound JWT)

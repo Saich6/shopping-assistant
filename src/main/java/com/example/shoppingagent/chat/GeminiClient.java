@@ -43,11 +43,20 @@ public class GeminiClient {
         this.props = props;
     }
 
-    /**
-     * Makes ONE call to Gemini with the conversation so far and returns the model's reply
-     * (the candidate "content": a role plus parts that are text and/or function calls).
-     */
+    /** Calls the main model. See {@link #generateContent(List, List, String)}. */
     public JsonNode generateContent(List<JsonNode> contents, List<Map<String, Object>> tools) {
+        return generateContent(contents, tools, props.model());
+    }
+
+    /**
+     * Asks the given model for the next reply to the conversation so far and returns it
+     * (the candidate "content": a role plus parts that are text and/or function calls).
+     *
+     * Temporary errors (HTTP 429/500/502/503/504) are retried with a growing delay. If every attempt fails,
+     * a {@link ModelOverloadedException} is thrown. Any other error (bad key, bad request...) fails at once,
+     * because retrying cannot fix it.
+     */
+    public JsonNode generateContent(List<JsonNode> contents, List<Map<String, Object>> tools, String model) {
         if (props.apiKey() == null || props.apiKey().isBlank()) {
             throw new GeminiException(HttpStatus.SERVICE_UNAVAILABLE,
                     "GEMINI_API_KEY is not set. Set the environment variable and restart the app.");
@@ -60,26 +69,38 @@ public class GeminiClient {
             body.put("tools", tools);
         }
 
-        JsonNode response;
-        try {
-            response = restClient.post()
-                    .uri("/models/{model}:generateContent", props.model())
-                    .header("x-goog-api-key", props.apiKey())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(body)
-                    .retrieve()
-                    .body(JsonNode.class);
-        } catch (RestClientResponseException e) {
-            // Gemini answered with an error status (bad key, quota, bad model name...).
-            String detail = errorDetail(e);
-            log.warn("Gemini call failed: HTTP {} {}", e.getStatusCode().value(), detail);
-            throw new GeminiException(HttpStatus.BAD_GATEWAY,
-                    "Gemini returned HTTP " + e.getStatusCode().value() + (detail.isEmpty() ? "" : ": " + detail), e);
-        } catch (RestClientException e) {
-            // Network problem or timeout.
-            log.warn("Could not reach Gemini", e);
-            throw new GeminiException(HttpStatus.BAD_GATEWAY,
-                    "Could not reach Gemini: " + e.getMessage(), e);
+        JsonNode response = null;
+        int maxAttempts = Math.max(1, props.maxAttempts());
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                response = restClient.post()
+                        .uri("/models/{model}:generateContent", model)
+                        .header("x-goog-api-key", props.apiKey())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(body)
+                        .retrieve()
+                        .body(JsonNode.class);
+                break; // success
+            } catch (RestClientResponseException e) {
+                int status = e.getStatusCode().value();
+                String detail = errorDetail(e);
+                log.warn("Gemini call failed (model {}, attempt {}/{}): HTTP {} {}",
+                        model, attempt, maxAttempts, status, detail);
+                if (!isRetryable(status)) {
+                    // Bad key, bad request, unknown model...: retrying cannot help.
+                    throw new GeminiException(HttpStatus.BAD_GATEWAY,
+                            "Gemini returned HTTP " + status + (detail.isEmpty() ? "" : ": " + detail), e);
+                }
+                if (attempt == maxAttempts) {
+                    throw new ModelOverloadedException(model, maxAttempts, status);
+                }
+                pause(attempt);
+            } catch (RestClientException e) {
+                // Network problem or timeout.
+                log.warn("Could not reach Gemini", e);
+                throw new GeminiException(HttpStatus.BAD_GATEWAY,
+                        "Could not reach Gemini: " + e.getMessage(), e);
+            }
         }
 
         JsonNode content = response == null ? null : response.path("candidates").path(0).path("content");
@@ -87,6 +108,23 @@ public class GeminiClient {
             throw new GeminiException(HttpStatus.BAD_GATEWAY, "Gemini returned an empty answer");
         }
         return content;
+    }
+
+    /** Overload and temporary server problems are worth retrying; client mistakes are not. */
+    private static boolean isRetryable(int status) {
+        return status == 429 || status == 500 || status == 502 || status == 503 || status == 504;
+    }
+
+    /** Waits before the next attempt: delay, then 2x delay, then 4x... (exponential backoff). */
+    private void pause(int failedAttempt) {
+        long millis = props.retryDelayMillis() << (failedAttempt - 1);
+        if (millis <= 0) return;
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new GeminiException(HttpStatus.SERVICE_UNAVAILABLE, "Interrupted while waiting to retry", ie);
+        }
     }
 
     /** Pulls error.message out of Gemini's JSON error body, e.g. "API key not valid". */
