@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Demo Store</title>
+  <style>
+    body{margin:0;font:16px/1.5 system-ui,sans-serif;color:#1c2330;background:#f6f7f9}
+    header{background:#1c2330;color:#fff;padding:16px 24px;font-size:20px;font-weight:600}
+    main{max-width:960px;margin:0 auto;padding:24px}
+    .hero{background:#fff;border-radius:12px;padding:28px;margin-bottom:24px}
+    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px}
+    .card{background:#fff;border-radius:12px;padding:16px}
+    .card b{display:block;margin-bottom:6px}
+    footer{padding:24px;text-align:center;color:#5b6575;font-size:14px}
+  </style>
+</head>
+<body>
+  <header>Demo Store</header>
+  <main>
+    <section class="hero">
+      <h1>Welcome to the demo store</h1>
+      <p>This page stands in for a real storefront. The chat button at the bottom right is added by a single
+         script tag, the same way the production assistant is injected into the site.</p>
+    </section>
+    <section class="grid" aria-label="Sample departments">
+      <div class="card"><b>Electronics</b>TVs, headphones, laptops</div>
+      <div class="card"><b>Kitchen</b>Cookers, mixers, cookware</div>
+      <div class="card"><b>Grocery</b>Oils, eggs, protein</div>
+      <div class="card"><b>Furniture</b>Mattresses, office chairs</div>
+    </section>
+  </main>
+  <footer>Demo page for the Shopping Assistant learning project. Not a real store.</footer>
+
+  <!-- The only line needed to add the assistant to a page. -->
+  <script src="/widget/shopping-assistant.js" data-api-url="/api/chat" data-title="Shopping Assistant"></script>
+</body>
+</html>
