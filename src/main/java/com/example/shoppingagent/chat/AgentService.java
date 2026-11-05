@@ -1,5 +1,7 @@
 package com.example.shoppingagent.chat;
 
+import com.example.shoppingagent.conversation.ConversationStore;
+import com.example.shoppingagent.conversation.Turn;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -32,12 +34,26 @@ public class AgentService {
     private final ShoppingTools tools;
     private final ObjectMapper mapper;
     private final GeminiProperties props;
+    private final ConversationStore store;
 
-    public AgentService(GeminiClient gemini, ShoppingTools tools, ObjectMapper mapper, GeminiProperties props) {
+    public AgentService(GeminiClient gemini, ShoppingTools tools, ObjectMapper mapper, GeminiProperties props,
+                        ConversationStore store) {
         this.gemini = gemini;
         this.tools = tools;
         this.mapper = mapper;
         this.props = props;
+        this.store = store;
+    }
+
+    /**
+     * Answers a question as part of a conversation: earlier turns of this session are sent to Gemini too,
+     * so follow-ups like "which one is cheapest?" make sense. The turn is saved only if an answer was produced.
+     */
+    public String chat(String sessionId, String userMessage) {
+        List<Turn> history = store.getHistory(sessionId);
+        String reply = answer(history, userMessage);
+        store.addTurn(sessionId, new Turn(userMessage, reply));
+        return reply;
     }
 
     /**
@@ -45,9 +61,9 @@ public class AgentService {
      * the WHOLE question is started again on the fallback model (never mixing models in one conversation,
      * because the history can hold model-specific details). If that fails too, the customer gets a friendly message.
      */
-    public String chat(String userMessage) {
+    private String answer(List<Turn> history, String userMessage) {
         try {
-            return run(userMessage, props.model());
+            return run(history, userMessage, props.model());
         } catch (ModelOverloadedException e) {
             String fallback = props.fallbackModel();
             if (fallback == null || fallback.isBlank() || fallback.equals(props.model())) {
@@ -55,7 +71,7 @@ public class AgentService {
             }
             log.warn("Main model {} is overloaded; retrying the question on fallback model {}", props.model(), fallback);
             try {
-                return run(userMessage, fallback);
+                return run(history, userMessage, fallback);
             } catch (ModelOverloadedException e2) {
                 throw busy(e2);
             }
@@ -67,9 +83,14 @@ public class AgentService {
                 "The assistant is busy right now. Please try again in a moment.", cause);
     }
 
-    private String run(String userMessage, String model) {
+    private String run(List<Turn> history, String userMessage, String model) {
         // "contents" is the whole conversation. Gemini is stateless: we resend it on every call.
+        // Earlier turns are plain text (question + final answer), so they work with any model, fallback included.
         List<JsonNode> contents = new ArrayList<>();
+        for (Turn turn : history) {
+            contents.add(userContent(turn.userMessage()));
+            contents.add(modelContent(turn.assistantReply()));
+        }
         contents.add(userContent(userMessage));
         int webSearches = 0;
 
@@ -109,6 +130,12 @@ public class AgentService {
 
     private ObjectNode userContent(String text) {
         ObjectNode content = mapper.createObjectNode().put("role", "user");
+        content.putArray("parts").addObject().put("text", text);
+        return content;
+    }
+
+    private ObjectNode modelContent(String text) {
+        ObjectNode content = mapper.createObjectNode().put("role", "model");
         content.putArray("parts").addObject().put("text", text);
         return content;
     }
